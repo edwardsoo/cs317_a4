@@ -5,6 +5,7 @@
 #ifndef _UTIL_H_
 #define _UTIL_H_
 
+#define where() printf("%s %u\n", __func__, __LINE__)
 typedef enum {
     METHOD_GET, METHOD_POST, METHOD_HEAD, METHOD_OPTIONS, METHOD_PUT,
     METHOD_DELETE, METHOD_TRACE, METHOD_CONNECT, METHOD_UNKNOWN

@@ -37,9 +37,10 @@ typedef struct http_response {
 } http_response;
 
 void handle_client(int socket);
-void knock_handler(http_response* header);
+void knock_handler(http_response* header, http_cookie* cookie);
 void send_response(int socket, http_response *response);
-http_cookie* get_cookies(const char *value, int length);
+http_cookie* get_cookies_from_str(const char *value, int length);
+char* get_cookie_value(http_cookie* cookie, char* name);
 
 
 void print_cookies(http_cookie *cookie);

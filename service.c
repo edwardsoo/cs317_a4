@@ -47,32 +47,37 @@ void handle_client(int socket) {
   service cmd;
   http_method method;
   http_response resp;
-  int bytes, header_size, s;
-  char buffer[BUFFER_SIZE], request[BUFFER_SIZE];
-  const char *path, *req_body, *cookie_val;
+  int bytes, s;
+  char req[BUFFER_SIZE], buf[BUFFER_SIZE];
+  const char *path, *cookie_val;
 
   /* TODO Loop receiving requests and sending appropriate responses,
    *      until one of the conditions to close the connection is
    *      met.
    */
 
-  bytes = recv(socket, buffer, BUFFER_SIZE, 0);
+  bytes = recv(socket, req, BUFFER_SIZE, 0);
   if (bytes != -1) {
-    
-    memcpy(request, buffer, BUFFER_SIZE);
-    header_size = http_header_complete(buffer, BUFFER_SIZE);
-    method = http_parse_method(buffer);
-    path = http_parse_uri(buffer);
-    path = http_parse_path(path);
-    req_body = http_parse_body(buffer, BUFFER_SIZE);
-    cookie_val = http_parse_header_field(buffer, bytes, "Cookie");
+    // Get a copy for string manipulations
+    memcpy(buf, req, bytes);
 
-    printf("header size %i\n", header_size);
+    // Get HTTP method
+    method = http_parse_method(buf);
+
+    // Get path
+    path = http_parse_path(http_parse_uri(buf));
     printf("path %s\n", path);
-    printf("req body %s\n", req_body);
-    cookie = get_cookies(cookie_val, strlen(cookie_val));
-    print_cookies(cookie);
 
+    // Parse cookies 
+    if (strstr(req, "Cookie:")) {
+      cookie_val = http_parse_header_field(buf, bytes, "Cookie");
+      cookie = get_cookies_from_str(cookie_val, strlen(cookie_val));
+      print_cookies(cookie);
+    } else {
+      cookie = NULL;
+    }
+
+    // Match service command
     cmd = SERV_UNKNOWN;
     for (s= 0; s < SERV_UNKNOWN; s++) {
       if (strncasecmp(path, service_str[s], strlen(service_str[s])) == 0) {
@@ -81,10 +86,11 @@ void handle_client(int socket) {
       }
     }
 
+    // Handle command
     switch (method) {
       case METHOD_GET:
         if (cmd == SERV_KNOCK) {
-          knock_handler(&resp);
+          knock_handler(&resp, cookie);
         }
         break;
       case METHOD_POST:
@@ -101,14 +107,24 @@ void handle_client(int socket) {
   return;
 }
 
-void knock_handler(http_response* response) {
+void knock_handler(http_response* response, http_cookie* cookie) {
+  char *username; 
+  char body[BUFFER_SIZE];
+  int bytes;
+ 
   response->status = OK;
   response->connection = KEEP_ALIVE;
   response->cache_control = PUBLIC;
   response->content_type = TEXT;
   response->content_length = strlen(KNOCK_RESP);
- 
-  sprintf(response->body, KNOCK_RESP); 
+
+  bytes = 0;
+  username = get_cookie_value(cookie, "username"); 
+  if (username) {
+    bytes = sprintf(body, "Username: %s\n", username);
+  }
+  sprintf(body + bytes, KNOCK_RESP);
+  strcpy(response->body, body);
 }
 
 void ssend(int socket, const char* str) {
@@ -146,7 +162,16 @@ void send_response(int socket, http_response *resp) {
   ssend(socket, resp->body);
 }
 
-http_cookie* get_cookies(const char *value, int length) {
+char* get_cookie_value(http_cookie* cookie, char* name) {
+  while (cookie) {
+    if (strcmp(name, cookie->name) == 0) {
+      return cookie->value;
+    }
+  }
+  return NULL;
+}
+
+http_cookie* get_cookies_from_str(const char *value, int length) {
   http_cookie *cookie, *other, *tmp;
   int name_len, value_len;
   char *eq, *sc;
