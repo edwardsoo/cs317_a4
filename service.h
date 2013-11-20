@@ -5,25 +5,42 @@
 #ifndef _SERVICE_H_
 #define _SERVICE_H_
 
-#define RECV_BUFFER_SIZE 0x1000
+#define BUFFER_SIZE 0x2000
+#define COOKIE_SIZE 0x100
 
-#define CMD_KNOCK "knock"
-#define CMD_LOGIN "login"
-#define CMD_LOGOUT "logout"
-#define CMD_GETFILE "getfile"
-#define CMD_PUTFILE "putfile"
-#define CMD_ADDCART "addcart"
-#define CMD_DELCART "delcart"
-#define CMD_CHECKOUT "checkout"
+#define HDR_SET_COOKIE "Set-Cookie: " 
+#define HDR_CONTENT_LEN "Content-Length: "
+#define HDR_CONTENT_TYPE "Content-Type: "
+#define HDR_CACHE_CTRL "Cache-Control: "
+#define HDR_CONNECTION "Connection: "
+#define HDR_XFER_ENCODE "Transfer-Encoding: "
+#define HDR_IF_MOD_SINCE "If-Modified-Since: "
+#define HDR_LAST_MOD "Last-Modified: "
+#define HDR_DATE "Date: "
 
-#define HDR_CONTENT_LEN "Content-Length"
-#define HDR_CONTENT_TYPE "Content-Type"
-#define HDR_CACHE_CTRL "Cache-Control"
-#define HDR_CONNECTION "Connection"
-#define HDR_XFER_ENCODE "Transfer-Encoding"
-#define HDR_IF_MOD_SINCE "If-Modified-Since"
-#define HDR_LAST_MOD "Last-Modified"
+#define HTTP_VERSION "HTTP/1.1 "
+
+#define KNOCK_RESP "Who's there?\n"
+
+typedef struct http_cookie {
+  struct http_cookie *next;
+  char name[COOKIE_SIZE], value[COOKIE_SIZE];
+} http_cookie;
+
+typedef struct http_response {
+  enum {OK, NOT_FOUND, FORBIDDEN} status;
+  enum {KEEP_ALIVE, CLOSE} connection;
+  enum {PUBLIC, NO_CACHE} cache_control;
+  enum {TEXT, BINARY} content_type;
+  int content_length;
+  char body[BUFFER_SIZE];
+} http_response;
 
 void handle_client(int socket);
+void knock_handler(http_response* header);
+void send_response(int socket, http_response *response);
+http_cookie* get_cookies(const char *value, int length);
 
+
+void print_cookies(http_cookie *cookie);
 #endif
