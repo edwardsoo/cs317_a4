@@ -27,7 +27,7 @@
 #define HTTP_VERSION "HTTP/1.1 "
 #define METHODS_ALLOWED "GET, POST"
 #define KNOCK_RESP "Who's there?\n"
-#define RFC_822_FMT "%a, %d %b %y %T %Z"
+#define RFC_822_FMT "%a, %d %b %Y %T %Z"
 
 // List node for cookies and parameters
 typedef struct node {
@@ -52,6 +52,7 @@ typedef struct http_response {
 char* get_query_str_from_path(const char* path);
 node* get_cookies_from_header(char* value);
 node* get_params_from_query(char* query);
+char* RFC_822_to_time(char *str, time_t *time);
 
 // Service handlers
 void handle_client(int socket);

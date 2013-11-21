@@ -52,9 +52,8 @@ void handle_client(int socket) {
   int bytes, s;
   char req[BUFFER_SIZE], buf[BUFFER_SIZE];
   const char *path;
-  char *cookie_val, *connection, *since;
+  char *cookie_val, *connection;
   time_t since_time;
-  struct tm tm;
 
   /* TODO Loop receiving requests and sending appropriate responses,
    *      until one of the conditions to close the connection is
@@ -76,17 +75,16 @@ void handle_client(int socket) {
       bytes += recv(socket, req + bytes, BUFFER_SIZE, 0);
     }
 
-    // Get a copy for string manipulations
-    memcpy(buf, req, bytes);
-
     // Get HTTP method
-    method = http_parse_method(buf);
+    method = http_parse_method(req);
 
     // Get path
+    strcpy(buf, req);
     path = http_parse_path(http_parse_uri(buf));
 
     // Parse cookies 
     if (strstr(req, HDR_COOKIE)) {
+      strcpy(buf, req);
       cookie_val = http_parse_header_field(buf, bytes, HDR_COOKIE);
       cookie = get_cookies_from_header(cookie_val);
     } else {
@@ -114,12 +112,10 @@ void handle_client(int socket) {
           logout_handler(&resp, cookie);
         } else if (cmd == SERV_GETFILE) {
           since_time = 0;
-          if (strstr(req, HDR_IF_MOD_SINCE)) {
-            since = http_parse_header_field(buf, bytes, HDR_IF_MOD_SINCE);
-            if (!strptime(since, RFC_822_FMT, &tm)) {
+          strcpy(buf, req);
+          if (strstr(buf, HDR_IF_MOD_SINCE)) {
+            if (!RFC_822_to_time(strstr(buf, HDR_IF_MOD_SINCE) + strlen(HDR_IF_MOD_SINCE), &since_time)) {
               since_time = 0;
-            } else {
-              since_time = mktime(&tm);
             }
           }
           getfile_handler(&resp, param, since_time);
@@ -226,7 +222,6 @@ void getfile_handler(http_response* resp, node* param, time_t since) {
 
   filename = list_lookup(param, "filename");
   if (filename) {
-      where();
     fp = fopen(filename, "r");
     if (fp) {
       stat(filename, &filestat);
@@ -245,16 +240,14 @@ void getfile_handler(http_response* resp, node* param, time_t since) {
         resp->opt_flags |= OPT_CONTENT_LENGTH;
       }
     } else {
-      where();
       resp->status = NOT_FOUND;
       resp->connection = CLOSE;
       resp->content_type = TEXT;
     }
 
   } else {
-      where();
       resp->status = FORBIDDEN;
-      resp->status = CLOSE;
+      resp->connection = CLOSE;
       resp->content_type = TEXT;
   }
   resp->cache_control = PUBLIC;
@@ -446,12 +439,82 @@ node* append_list(node* list, node* append) {
   return list;
 }
 
-char* RFC_822_to_time(char *str, struct tm *tm) {
-  // Thu, 21 Nov 13 09:50:55 GMT
-  int length;
+#define DATE_PART_DELIMITER " :,"
+// Parse a RFC822 Date string into time_t
+char* RFC_822_to_time(char *str, time_t *time) {
   char *ptr;
+  struct tm tm;
 
-  if (strlen(str) < 27)
+  if (strlen(str) < 27) return NULL;
+
+  // Weekday
+  ptr = strtok(str, DATE_PART_DELIMITER);
+    if (!strcmp(ptr, "Sun")) {
+    tm.tm_wday = 0;
+  } else if (!strcmp(ptr, "Mon")) {
+    tm.tm_wday = 1;
+  } else if (!strcmp(ptr, "Tue")) {
+    tm.tm_wday = 2;
+  } else if (!strcmp(ptr, "Wed")) {
+    tm.tm_wday = 3;
+  } else if (!strcmp(ptr, "Thu")) {
+    tm.tm_wday = 4;
+  } else if (!strcmp(ptr, "Fri")) {
+    tm.tm_wday = 5;
+  } else if (!strcmp(ptr, "Sat")) {
+    tm.tm_wday = 6;
+  }
+
+  // Day 
+  ptr = strtok(NULL, DATE_PART_DELIMITER);
+    tm.tm_mday = atoi(ptr);
+
+  // Month
+  ptr = strtok(NULL, DATE_PART_DELIMITER);
+    if (!strcmp(ptr, "Jan")) {
+    tm.tm_mon = 0;
+  } else if (!strcmp(ptr, "Feb")) {
+    tm.tm_mon = 1;
+  } else if (!strcmp(ptr, "Mar")) {
+    tm.tm_mon = 2;
+  } else if (!strcmp(ptr, "Apr")) {
+    tm.tm_mon = 3;
+  } else if (!strcmp(ptr, "May")) {
+    tm.tm_mon = 4;
+  } else if (!strcmp(ptr, "Jun")) {
+    tm.tm_mon = 5;
+  } else if (!strcmp(ptr, "Jul")) {
+    tm.tm_mon = 6;
+  } else if (!strcmp(ptr, "Aug")) {
+    tm.tm_mon = 7;
+  } else if (!strcmp(ptr, "Sep")) {
+    tm.tm_mon = 8;
+  } else if (!strcmp(ptr, "Oct")) {
+    tm.tm_mon = 9;
+  } else if (!strcmp(ptr, "Nov")) {
+    tm.tm_mon = 10;
+  } else if (!strcmp(ptr, "Dec")) {
+    tm.tm_mon = 11;
+  }
+
+  // Year
+  ptr = strtok(NULL, DATE_PART_DELIMITER);
+    tm.tm_year = atoi(ptr) - 1900;
+
+  // Hour
+  ptr = strtok(NULL, DATE_PART_DELIMITER);
+    tm.tm_hour = atoi(ptr);
+
+  // Minute
+  ptr = strtok(NULL, DATE_PART_DELIMITER);
+    tm.tm_min = atoi(ptr);
+  
+  // Second
+  ptr = strtok(NULL, DATE_PART_DELIMITER);
+    tm.tm_sec = atoi(ptr);
+
+  *time = mktime(&tm);  
+  return strtok(NULL, DATE_PART_DELIMITER);
 }
 
 void print_list(node *node) {
