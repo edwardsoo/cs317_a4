@@ -37,7 +37,7 @@ typedef struct http_response {
   enum {TEXT, BINARY} content_type;
   int content_length;
   char body[BUFFER_SIZE];
-  node *cookie;
+  node *cookie, *expire;
 } http_response;
 
 // Helper functions
@@ -49,6 +49,8 @@ node* get_params_from_query(char* query);
 void handle_client(int socket);
 void knock_handler(http_response* header, node* cookie);
 void login_handler(http_response*, node*);
+void logout_handler(http_response* resp, node* cookie);
+
 void send_response(int socket, http_response *response);
 
 // List functions
@@ -56,6 +58,7 @@ char* list_lookup(node* list, char* name);
 char* list_lookup_nc(node* list, char* name);
 node* reverse_list(node* list);
 node* append_list(node* list, node* append);
+void free_list(node* list);
 
 void print_list(node *cookie);
 #endif

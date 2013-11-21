@@ -56,12 +56,15 @@ void handle_client(int socket) {
    *      until one of the conditions to close the connection is
    *      met.
    */
+  resp.expire = resp.cookie = NULL;
 
   do {
     // New request
     memset(req, 0, BUFFER_SIZE);
-    resp.cookie = NULL;
-    resp.content_length = 0;
+    free_list(resp.cookie);
+    free_list(resp.expire);
+    resp.expire = resp.cookie = NULL;
+    memset(resp.body, 0, BUFFER_SIZE);
     bytes = 0;
 
     // Wait for HTTP header to complete
@@ -77,13 +80,11 @@ void handle_client(int socket) {
 
     // Get path
     path = http_parse_path(http_parse_uri(buf));
-    printf("path %s\n", path);
 
     // Parse cookies 
     if (strstr(req, "Cookie:")) {
       cookie_val = http_parse_header_field(buf, bytes, "Cookie");
       cookie = get_cookies_from_header(cookie_val);
-      print_list(cookie);
     } else {
       cookie = NULL;
     }
@@ -101,11 +102,15 @@ void handle_client(int socket) {
     switch (method) {
       case METHOD_GET:
         param = get_params_from_query(get_query_str_from_path(path));
-        print_list(param);
         if (cmd == SERV_KNOCK) {
           knock_handler(&resp, cookie);
         } else if (cmd == SERV_LOGIN) {
           login_handler(&resp, param);
+        } else if (cmd == SERV_LOGOUT) {
+          logout_handler(&resp, cookie);
+        } else {
+          resp.status = NOT_FOUND;
+          resp.connection = CLOSE;
         }
         break;
       case METHOD_POST:
@@ -119,7 +124,7 @@ void handle_client(int socket) {
     // Check if client wants to close connection after completing request
     if (strstr(req, "Connection:")) {
       connection = http_parse_header_field(buf, bytes, "Connection");
-      if (strcmp(connection, "close") == 0) {
+      if (resp.connection == KEEP_ALIVE && strcmp(connection, "close") == 0) {
         resp.connection = CLOSE;
       }
     } 
@@ -128,15 +133,15 @@ void handle_client(int socket) {
   } while (resp.connection != CLOSE);
 }
 
-void knock_handler(http_response* response, node* cookie) {
+void knock_handler(http_response* resp, node* cookie) {
   char *username; 
   char body[BUFFER_SIZE];
   int bytes;
  
-  response->status = OK;
-  response->connection = KEEP_ALIVE;
-  response->cache_control = PUBLIC;
-  response->content_type = TEXT;
+  resp->status = OK;
+  resp->connection = KEEP_ALIVE;
+  resp->cache_control = PUBLIC;
+  resp->content_type = TEXT;
 
   bytes = 0;
   username = list_lookup(cookie, "username"); 
@@ -144,33 +149,55 @@ void knock_handler(http_response* response, node* cookie) {
     bytes = sprintf(body, "Username: %s\n", username);
   }
   sprintf(body + bytes, KNOCK_RESP);
-  strcpy(response->body, body);
-  response->content_length = strlen(response->body);
+  strcpy(resp->body, body);
+  resp->content_length = strlen(resp->body);
 }
 
-void login_handler(http_response* response, node* param) {
+void login_handler(http_response* resp, node* param) {
   char *username;
   node *cookie;
 
   username = list_lookup_nc(param, "username");
   if (username) {
-    response->status = OK;
-    response->connection = KEEP_ALIVE;
-    sprintf(response->body, "Username: %s\n", username);
-    response->content_length = strlen(response->body);
+    resp->status = OK;
+    resp->connection = KEEP_ALIVE;
+    sprintf(resp->body, "Username: %s\n", username);
     cookie = (node*) malloc(sizeof(node));
     strcpy(cookie->name, "username");
     strcpy(cookie->value, username);
     cookie->next = NULL;
-    response->cookie = append_list(response->cookie, cookie);
+    resp->cookie = append_list(resp->cookie, cookie);
 
   } else {
-    response->status = FORBIDDEN;
-    response->connection = CLOSE;
-    response->content_length = 0;
+    resp->status = FORBIDDEN;
+    resp->connection = CLOSE;
   }
-  response->cache_control = PUBLIC;
-  response->content_type = TEXT;
+  resp->content_length = strlen(resp->body);
+  resp->cache_control = PUBLIC;
+  resp->content_type = TEXT;
+}
+
+void logout_handler(http_response* resp, node* cookie) {
+  char *username;
+  node* expire;
+
+  username = list_lookup(cookie, "username");
+  if (username) {
+    resp->status = OK;
+    resp->connection = KEEP_ALIVE;
+    sprintf(resp->body, "User %s was logged out.\n", username);
+    expire = (node*) malloc(sizeof(node));
+    strcpy(expire->name, "username");
+    strcpy(expire->value, "0");
+    expire->next = NULL;
+    resp->expire = append_list(resp->expire, expire);
+  } else {
+    resp->status = FORBIDDEN;
+    resp->connection = CLOSE;
+  }
+  resp->content_length = strlen(resp->body);
+  resp->cache_control = PUBLIC;
+  resp->content_type = TEXT;
 }
 
 void ssend(int socket, const char* str) {
@@ -179,13 +206,14 @@ void ssend(int socket, const char* str) {
 
 void send_response(int socket, http_response *resp) {
   char str[0x100], cookie_str[0x100];
-  time_t now, day_from_now;
+  time_t now, day_from_now, epoch;
   struct tm tm;
   node *cookie;
    
   // Get time
   time(&now);
   day_from_now = now + (24*60*60);
+  epoch = 0;
 
   /* Start of header */
   // Write HTTP version and status
@@ -203,11 +231,23 @@ void send_response(int socket, http_response *resp) {
   ssend(socket, connection_str[resp->connection]);
   ssend(socket, "\n");
 
-  // Write cookies changes
+  // Write new cookies
   if (resp->cookie) {
     gmtime_r(&day_from_now, &tm);
     strftime(str, 0x100, "%a, %d %b %y %T %Z", &tm);
     cookie = resp->cookie;
+    while (cookie) {
+      ssend(socket, HDR_SET_COOKIE);
+      sprintf(cookie_str, "%s=%s;path=/;expires=%s;\n", cookie->name, cookie->value, str);
+      ssend(socket, cookie_str);
+      cookie = cookie->next;
+    }
+  }
+  // Write cookies to be deleted
+  if (resp->expire)   {
+    gmtime_r(&epoch, &tm);
+    strftime(str, 0x100, "%a, %d %b %y %T %Z", &tm);
+    cookie = resp->expire;
     while (cookie) {
       ssend(socket, HDR_SET_COOKIE);
       sprintf(cookie_str, "%s=%s;path=/;expires=%s;\n", cookie->name, cookie->value, str);
@@ -263,7 +303,15 @@ char* list_lookup_nc(node* list, char* name) {
   }
   return NULL;
 }
-// return a pointer to everything in path after the first '?'
+
+// Free nodes in list
+void free_list(node* list) {
+  node* next;
+  if (!list) return;
+  next = list->next;
+  free(list);
+  free_list(next);
+}
 
 // return NULL if no '?' or nothing after '?'
 char* get_query_str_from_path(const char* path) {
