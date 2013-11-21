@@ -13,7 +13,9 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <signal.h>
+#define _GNU_SOURCE
 #include <time.h>
 #include <ctype.h>
 
@@ -30,7 +32,7 @@ const char* service_str[] = {
   "/addcart", "/delcart", "/checkout"
 };
 const char* status_str[] = {
-  "200 OK", "403 Forbidden", "404 Not Found", "405 Method Not Allowed"
+  "200 OK", "304 Not Modified", "403 Forbidden", "404 Not Found", "405 Method Not Allowed"
 };
 const char* connection_str[] = {
   "keep-alive", "close"
@@ -50,7 +52,9 @@ void handle_client(int socket) {
   int bytes, s;
   char req[BUFFER_SIZE], buf[BUFFER_SIZE];
   const char *path;
-  char *cookie_val, *connection;
+  char *cookie_val, *connection, *since;
+  time_t since_time;
+  struct tm tm;
 
   /* TODO Loop receiving requests and sending appropriate responses,
    *      until one of the conditions to close the connection is
@@ -82,8 +86,8 @@ void handle_client(int socket) {
     path = http_parse_path(http_parse_uri(buf));
 
     // Parse cookies 
-    if (strstr(req, "Cookie:")) {
-      cookie_val = http_parse_header_field(buf, bytes, "Cookie");
+    if (strstr(req, HDR_COOKIE)) {
+      cookie_val = http_parse_header_field(buf, bytes, HDR_COOKIE);
       cookie = get_cookies_from_header(cookie_val);
     } else {
       cookie = NULL;
@@ -108,6 +112,17 @@ void handle_client(int socket) {
           login_handler(&resp, param);
         } else if (cmd == SERV_LOGOUT) {
           logout_handler(&resp, cookie);
+        } else if (cmd == SERV_GETFILE) {
+          since_time = 0;
+          if (strstr(req, HDR_IF_MOD_SINCE)) {
+            since = http_parse_header_field(buf, bytes, HDR_IF_MOD_SINCE);
+            if (!strptime(since, RFC_822_FMT, &tm)) {
+              since_time = 0;
+            } else {
+              since_time = mktime(&tm);
+            }
+          }
+          getfile_handler(&resp, param, since_time);
         } else {
           resp.status = NOT_FOUND;
           resp.connection = CLOSE;
@@ -167,12 +182,13 @@ void login_handler(http_response* resp, node* param) {
     strcpy(cookie->value, username);
     cookie->next = NULL;
     resp->cookie = append_list(resp->cookie, cookie);
+    resp->content_length = strlen(resp->body);
+    resp->opt_flags |= OPT_CONTENT_LENGTH;
 
   } else {
     resp->status = FORBIDDEN;
     resp->connection = CLOSE;
   }
-  resp->content_length = strlen(resp->body);
   resp->cache_control = PUBLIC;
   resp->content_type = TEXT;
 }
@@ -191,15 +207,58 @@ void logout_handler(http_response* resp, node* cookie) {
     strcpy(expire->value, "0");
     expire->next = NULL;
     resp->expire = append_list(resp->expire, expire);
+    resp->content_length = strlen(resp->body);
+    resp->opt_flags |= OPT_CONTENT_LENGTH;
+
   } else {
     resp->status = FORBIDDEN;
     resp->connection = CLOSE;
   }
-  resp->content_length = strlen(resp->body);
   resp->cache_control = PUBLIC;
   resp->content_type = TEXT;
 }
 
+void getfile_handler(http_response* resp, node* param, time_t since) {
+  FILE *fp;
+  char *filename;
+  size_t read;
+  struct stat filestat;
+
+  filename = list_lookup(param, "filename");
+  if (filename) {
+      where();
+    fp = fopen(filename, "r");
+    if (fp) {
+      stat(filename, &filestat);
+      if (filestat.st_mtime <= since) {
+        resp->status = NOT_MODIFIED;
+        resp->connection = CLOSE;
+      } else {
+        resp->status = OK;
+        resp->connection = KEEP_ALIVE;
+        read = fread(resp->body, sizeof(char), MAX_FILESIZE, fp);
+        resp->body[read] = 0;
+        resp->content_type = BINARY;
+        resp->content_length = strlen(resp->body);
+        resp->opt_flags |= OPT_CONTENT_LENGTH;
+        resp->last_modified = filestat.st_mtime;
+        resp->opt_flags |= OPT_CONTENT_LENGTH;
+      }
+    } else {
+      where();
+      resp->status = NOT_FOUND;
+      resp->connection = CLOSE;
+      resp->content_type = TEXT;
+    }
+
+  } else {
+      where();
+      resp->status = FORBIDDEN;
+      resp->status = CLOSE;
+      resp->content_type = TEXT;
+  }
+  resp->cache_control = PUBLIC;
+}
 void ssend(int socket, const char* str) {
   send(socket, str, strlen(str), 0);
 }
@@ -234,7 +293,7 @@ void send_response(int socket, http_response *resp) {
   // Write new cookies
   if (resp->cookie) {
     gmtime_r(&day_from_now, &tm);
-    strftime(str, 0x100, "%a, %d %b %y %T %Z", &tm);
+    strftime(str, 0x100, RFC_822_FMT, &tm);
     cookie = resp->cookie;
     while (cookie) {
       ssend(socket, HDR_SET_COOKIE);
@@ -246,7 +305,7 @@ void send_response(int socket, http_response *resp) {
   // Write cookies to be deleted
   if (resp->expire)   {
     gmtime_r(&epoch, &tm);
-    strftime(str, 0x100, "%a, %d %b %y %T %Z", &tm);
+    strftime(str, 0x100, RFC_822_FMT, &tm);
     cookie = resp->expire;
     while (cookie) {
       ssend(socket, HDR_SET_COOKIE);
@@ -261,19 +320,32 @@ void send_response(int socket, http_response *resp) {
   ssend(socket, cache_control_str[resp->cache_control]);
   ssend(socket, "\n");
 
-  // Write content length and type
-  ssend(socket, HDR_CONTENT_LEN);
-  sprintf(str, "%u", resp->content_length);
-  ssend(socket, str);
-  ssend(socket, "\n");
+  // Write content type
   ssend(socket, HDR_CONTENT_TYPE);
   ssend(socket, content_type_str[resp->content_type]);
   ssend(socket, "\n");
 
+  // Write content length
+  if (resp->opt_flags & OPT_CONTENT_LENGTH) {
+    ssend(socket, HDR_CONTENT_LEN);
+    sprintf(str, "%u", resp->content_length);
+    ssend(socket, str);
+    ssend(socket, "\n");
+  }
+
+  // Write last modified time
+  if (resp->opt_flags & OPT_LAST_MODIFIED) {
+    ssend(socket, HDR_LAST_MOD);
+    gmtime_r(&resp->last_modified, &tm);
+    strftime(str, 0x100, ".a, %d %b %y %T %Z", &tm);
+    ssend(socket, str);
+    ssend(socket, "\n");
+  }
+
   // Timestamp
   ssend(socket, HDR_DATE);
   gmtime_r(&now, &tm);
-  strftime(str, 0x100, "%a, %d %b %y %T %Z", &tm);
+  strftime(str, 0x100, RFC_822_FMT, &tm);
   ssend(socket, str);
   ssend(socket, "\n");
   ssend(socket, "\n");
@@ -372,6 +444,14 @@ node* append_list(node* list, node* append) {
   if (!list) return append;
   list->next = append_list(list->next, append);
   return list;
+}
+
+char* RFC_822_to_time(char *str, struct tm *tm) {
+  // Thu, 21 Nov 13 09:50:55 GMT
+  int length;
+  char *ptr;
+
+  if (strlen(str) < 27)
 }
 
 void print_list(node *node) {
