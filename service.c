@@ -56,8 +56,14 @@ void handle_client(int socket) {
    *      met.
    */
 
-  bytes = recv(socket, req, BUFFER_SIZE, 0);
-  if (bytes != -1) {
+  do {
+    // New request
+    bytes = 0;
+
+    // Wait for HTTP header to complete
+    while (http_header_complete(req, bytes) == -1) {
+      bytes += recv(socket, req + bytes, BUFFER_SIZE, 0);
+    }
 
     // Get a copy for string manipulations
     memcpy(buf, req, bytes);
@@ -105,13 +111,9 @@ void handle_client(int socket) {
         resp.connection = CLOSE;        
         break;
     }
- 
+
     send_response(socket, &resp);  
-  }
-  else {
-    printf("fuck\n");
-  }
-  return;
+  } while (resp.connection != CLOSE);
 }
 
 void knock_handler(http_response* response, node* cookie) {
