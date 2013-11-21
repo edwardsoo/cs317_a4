@@ -30,7 +30,7 @@ const char* service_str[] = {
   "/addcart", "/delcart", "/checkout"
 };
 const char* status_str[] = {
-  "200 OK", "403 Forbidden", "404 Not Found"
+  "200 OK", "403 Forbidden", "404 Not Found", "405 Method Not Allowed"
 };
 const char* connection_str[] = {
   "keep-alive", "close"
@@ -43,7 +43,7 @@ const char* content_type_str[] = {
 };
 
 void handle_client(int socket) {
-  http_cookie *cookie;
+  node *cookie, *param;
   service cmd;
   http_method method;
   http_response resp;
@@ -58,6 +58,7 @@ void handle_client(int socket) {
 
   bytes = recv(socket, req, BUFFER_SIZE, 0);
   if (bytes != -1) {
+
     // Get a copy for string manipulations
     memcpy(buf, req, bytes);
 
@@ -72,7 +73,7 @@ void handle_client(int socket) {
     if (strstr(req, "Cookie:")) {
       cookie_val = http_parse_header_field(buf, bytes, "Cookie");
       cookie = get_cookies_from_str(cookie_val, strlen(cookie_val));
-      print_cookies(cookie);
+      print_list(cookie);
     } else {
       cookie = NULL;
     }
@@ -89,16 +90,22 @@ void handle_client(int socket) {
     // Handle command
     switch (method) {
       case METHOD_GET:
+        param = get_params_from_query(get_query_str_from_path(path));
+        print_list(param);
         if (cmd == SERV_KNOCK) {
           knock_handler(&resp, cookie);
+        } else if (cmd == SERV_LOGIN) {
+          login_handler(&resp, param);
         }
         break;
       case METHOD_POST:
         break;
       default:
+        resp.status = METHOD_NOT_ALLOWED;
+        resp.connection = CLOSE;        
         break;
     }
-  
+ 
     send_response(socket, &resp);  
   }
   else {
@@ -107,7 +114,7 @@ void handle_client(int socket) {
   return;
 }
 
-void knock_handler(http_response* response, http_cookie* cookie) {
+void knock_handler(http_response* response, node* cookie) {
   char *username; 
   char body[BUFFER_SIZE];
   int bytes;
@@ -116,15 +123,33 @@ void knock_handler(http_response* response, http_cookie* cookie) {
   response->connection = KEEP_ALIVE;
   response->cache_control = PUBLIC;
   response->content_type = TEXT;
-  response->content_length = strlen(KNOCK_RESP);
 
   bytes = 0;
-  username = get_cookie_value(cookie, "username"); 
+  username = list_lookup(cookie, "username"); 
   if (username) {
     bytes = sprintf(body, "Username: %s\n", username);
   }
   sprintf(body + bytes, KNOCK_RESP);
   strcpy(response->body, body);
+  response->content_length = strlen(response->body);
+}
+
+void login_handler(http_response* response, node* param) {
+  char *username;
+
+  username = list_lookup_nc(param, "username");
+  if (username) {
+    response->status = OK;
+    response->connection = KEEP_ALIVE;
+    sprintf(response->body, "Username: %s\n", username);
+    response->content_length = strlen(response->body);
+  } else {
+    response->status = FORBIDDEN;
+    response->connection = CLOSE;
+    response->content_length = 0;
+  }
+  response->cache_control = PUBLIC;
+  response->content_type = TEXT;
 }
 
 void ssend(int socket, const char* str) {
@@ -139,6 +164,11 @@ void send_response(int socket, http_response *resp) {
   ssend(socket, HTTP_VERSION);
   ssend(socket, status_str[resp->status]);
   ssend(socket, "\n");
+  if (resp->status == METHOD_NOT_ALLOWED) {
+    ssend(socket, HDR_ALLOW);
+    ssend(socket, METHODS_ALLOWED);
+    ssend(socket, "\n");
+  }
   ssend(socket, HDR_CONNECTION);
   ssend(socket, connection_str[resp->connection]);
   ssend(socket, "\n");
@@ -159,24 +189,87 @@ void send_response(int socket, http_response *resp) {
   ssend(socket, str);
   ssend(socket, "\n");
   ssend(socket, "\n");
-  ssend(socket, resp->body);
+  // End of header
+  
+  if (strlen(resp->body)) {
+      ssend(socket, resp->body);
+  }
 }
 
-char* get_cookie_value(http_cookie* cookie, char* name) {
-  while (cookie) {
-    if (strcmp(name, cookie->name) == 0) {
-      return cookie->value;
+// Find the first entry in a list that matches name, and return its value
+char* list_lookup(node* list, char* name) {
+  while (list) {
+    if (strcmp(name, list->name) == 0) {
+      return list->value;
     }
   }
   return NULL;
 }
 
-http_cookie* get_cookies_from_str(const char *value, int length) {
-  http_cookie *cookie, *other, *tmp;
+// Similiar to list_lookup, but ignore the case of name when matching
+char* list_lookup_nc(node* list, char* name) {
+  while (list) {
+    if (strcasecmp(name, list->name) == 0) {
+      return list->value;
+    }
+  }
+  return NULL;
+}
+// return a pointer to everything in path after the first '?'
+
+// return NULL if no '?' or nothing after '?'
+char* get_query_str_from_path(const char* path) {
+  char* qm = memchr(path, '?', strlen(path));
+  if (qm && (strlen(path) - (qm - path)) > 1) {
+    return qm + 1;
+  }
+  return NULL;
+}
+
+// Reverse a list and return new head
+node* reverse_list(node* list) {
+  node *reversed, *tmp;
+
+  reversed = NULL;
+  while (list) {
+tmp = list->next;
+    list->next = reversed;
+    reversed = list;
+    list = tmp; 
+  }
+  return reversed;
+}
+
+// return a list of name-value parameter paris
+node* get_params_from_query(char* query) {
+  char *name, *eq, *value;
+  node *param, *prev;
+  
+  if (!query) return NULL;
+
+  param = prev = NULL;
+  name = strtok(query, "&");
+  while (name) {
+    eq = memchr(name, '=', strlen(name));
+    if (!eq) break;
+    value = eq + 1;
+    *eq = 0;
+    param = (node*) malloc(sizeof(node));
+    strcpy(param->name, name);
+    strcpy(param->value, value);
+    param->next = prev;
+    prev = param;
+    name = strtok(NULL, "&");
+  }
+  return reverse_list(param);
+}
+
+node* get_cookies_from_str(const char *value, int length) {
+  node *cookie, *prev;
   int name_len, value_len;
   char *eq, *sc;
 
-  cookie = NULL;  
+  cookie = prev = NULL;  
 
   // Skip leading space
   while (isspace(*value) && length > 0) {
@@ -192,13 +285,13 @@ http_cookie* get_cookies_from_str(const char *value, int length) {
     sc = memchr(eq + 1, ';', length - name_len - 1);
     value_len = sc - eq - 1;
     if (!sc) break;
-    other = (http_cookie*) malloc(sizeof(http_cookie));
-    strncpy(other->name, value, name_len);
-    other->name[name_len] = 0;
-    strncpy(other->value, eq + 1, value_len);
-    other->value[value_len] = 0;
-    other->next = cookie;
-    cookie = other;
+    cookie = (node*) malloc(sizeof(node));
+    strncpy(cookie->name, value, name_len);
+    cookie->name[name_len] = 0;
+    strncpy(cookie->value, eq + 1, value_len);
+    cookie->value[value_len] = 0;
+    cookie->next = prev;
+    prev = cookie;
 
     value = sc + 1;
     length -= name_len + value_len + 2;
@@ -210,21 +303,12 @@ http_cookie* get_cookies_from_str(const char *value, int length) {
     }
     eq = memchr(value, '=', length);
   }
-  // Reverse the cookie list so it is in the same order as in header value
-  other = cookie;
-  cookie = NULL;
-  while (other) {
-    tmp = other->next;
-    other->next = cookie;
-    cookie = other;
-    other= tmp; 
-  }
-  return cookie; 
+  return reverse_list(cookie);
 }
 
-void print_cookies(http_cookie *cookie) {
-  while (cookie) {
-    printf("Cookie %s = %s\n", cookie->name, cookie->value);
-    cookie = cookie->next;
+void print_list(node *node) {
+  while (node) {
+    printf("%s = %s\n", node->name, node->value);
+    node = node->next;
   }
 }
