@@ -40,17 +40,22 @@ typedef struct http_response {
   node *cookie;
 } http_response;
 
+// Helper functions
+char* get_query_str_from_path(const char* path);
+node* get_cookies_from_header(char* value);
+node* get_params_from_query(char* query);
+
+// Service handlers
 void handle_client(int socket);
 void knock_handler(http_response* header, node* cookie);
+void login_handler(http_response*, node*);
 void send_response(int socket, http_response *response);
-node* get_cookies_from_str(const char *value, int length);
-node* get_params_from_query(char* query);
+
+// List functions
 char* list_lookup(node* list, char* name);
 char* list_lookup_nc(node* list, char* name);
-void login_handler(http_response*, node*);
-char* get_query_str_from_path(const char* path);
-
 node* reverse_list(node* list);
 node* append_list(node* list, node* append);
+
 void print_list(node *cookie);
 #endif

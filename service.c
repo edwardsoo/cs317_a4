@@ -49,7 +49,8 @@ void handle_client(int socket) {
   http_response resp;
   int bytes, s;
   char req[BUFFER_SIZE], buf[BUFFER_SIZE];
-  const char *path, *cookie_val, *connection;
+  const char *path;
+  char *cookie_val, *connection;
 
   /* TODO Loop receiving requests and sending appropriate responses,
    *      until one of the conditions to close the connection is
@@ -81,7 +82,7 @@ void handle_client(int socket) {
     // Parse cookies 
     if (strstr(req, "Cookie:")) {
       cookie_val = http_parse_header_field(buf, bytes, "Cookie");
-      cookie = get_cookies_from_str(cookie_val, strlen(cookie_val));
+      cookie = get_cookies_from_header(cookie_val);
       print_list(cookie);
     } else {
       cookie = NULL;
@@ -273,70 +274,36 @@ char* get_query_str_from_path(const char* path) {
   return NULL;
 }
 
-// return a list of name-value parameter paris
-node* get_params_from_query(char* query) {
+node* get_list_from_token_str(char *str, char* delimiter) {
   char *name, *eq, *value;
-  node *param, *prev;
+  node *this, *prev;
   
-  if (!query) return NULL;
+  if (!str) return NULL;
 
-  param = prev = NULL;
-  name = strtok(query, "&");
+  this = prev = NULL;
+  name = strtok(str, delimiter);
   while (name) {
     eq = memchr(name, '=', strlen(name));
     if (!eq) break;
     value = eq + 1;
     *eq = 0;
-    param = (node*) malloc(sizeof(node));
-    strcpy(param->name, name);
-    strcpy(param->value, value);
-    param->next = prev;
-    prev = param;
-    name = strtok(NULL, "&");
+    this = (node*) malloc(sizeof(node));
+    strcpy(this->name, name);
+    strcpy(this->value, value);
+    this->next = prev;
+    prev = this;
+    name = strtok(NULL, delimiter);
   }
-  return reverse_list(param);
+  return reverse_list(this);
 }
 
-node* get_cookies_from_str(const char *value, int length) {
-  node *cookie, *prev;
-  int name_len, value_len;
-  char *eq, *sc;
+// return a list of name-value parameter paris
+node* get_params_from_query(char* query) {
+  return get_list_from_token_str(query, "&");
+}
 
-  cookie = prev = NULL;  
-
-  // Skip leading space
-  while (isspace(*value) && length > 0) {
-    value++;
-    length--;
-  }
-  
-  // Find first occurrence of '=' and ';'
-  eq = memchr(value, '=', length);
-
-  while (eq) {
-    name_len = eq - value;
-    sc = memchr(eq + 1, ';', length - name_len - 1);
-    value_len = sc - eq - 1;
-    if (!sc) break;
-    cookie = (node*) malloc(sizeof(node));
-    strncpy(cookie->name, value, name_len);
-    cookie->name[name_len] = 0;
-    strncpy(cookie->value, eq + 1, value_len);
-    cookie->value[value_len] = 0;
-    cookie->next = prev;
-    prev = cookie;
-
-    value = sc + 1;
-    length -= name_len + value_len + 2;
-
-    // Skip space 
-    while (isspace(*value) && length > 0) {
-      value++;
-      length--;
-    }
-    eq = memchr(value, '=', length);
-  }
-  return reverse_list(cookie);
+node* get_cookies_from_header(char* value) {
+  return get_list_from_token_str(value, "; ");
 }
 
 // Reverse a list and return new head
