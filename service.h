@@ -51,5 +51,6 @@ void login_handler(http_response*, node*);
 char* get_query_str_from_path(const char* path);
 
 node* reverse_list(node* list);
+node* append_list(node* list, node* append);
 void print_list(node *cookie);
 #endif
