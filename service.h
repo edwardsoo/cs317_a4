@@ -37,11 +37,10 @@ typedef struct node {
 } node;
 
 typedef struct http_response {
-  enum {OK, NOT_MODIFIED, FORBIDDEN, NOT_FOUND, METHOD_NOT_ALLOWED} status;
+  enum {OK, NOT_MODIFIED, FORBIDDEN, NOT_FOUND, METHOD_NOT_ALLOWED} status, allow;
   enum {KEEP_ALIVE, CLOSE} connection;
   enum {PUBLIC, NO_CACHE} cache_control;
   enum {TEXT, BINARY} content_type;
-  int content_length;
   unsigned int opt_flags;
   time_t last_modified;
   char body[BUFFER_SIZE];
@@ -50,8 +49,10 @@ typedef struct http_response {
 
 // Helper functions
 char* get_query_str_from_path(const char* path);
+char* get_cookie_str_from_req(const char* req);
 node* get_cookies_from_header(char* value);
 node* get_params_from_query(char* query);
+node* get_params_from_body(const char* body);
 char* RFC_822_to_time(char *str, time_t *time);
 
 // Service handlers
@@ -60,6 +61,7 @@ void knock_handler(http_response* header, node* cookie);
 void login_handler(http_response*, node*);
 void logout_handler(http_response* resp, node* cookie);
 void getfile_handler(http_response* resp, node* param, time_t since);
+void putfile_handler(http_response *resp, node *cookie, node* param);
 
 void send_response(int socket, http_response *response);
 

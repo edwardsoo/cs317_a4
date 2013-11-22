@@ -52,7 +52,7 @@ void handle_client(int socket) {
   int bytes, s;
   char req[BUFFER_SIZE], buf[BUFFER_SIZE];
   const char *path;
-  char *cookie_val, *connection;
+  char *connection;
   time_t since_time;
 
   /* TODO Loop receiving requests and sending appropriate responses,
@@ -67,6 +67,8 @@ void handle_client(int socket) {
     free_list(resp.cookie);
     free_list(resp.expire);
     resp.expire = resp.cookie = NULL;
+    resp.connection = KEEP_ALIVE;
+    resp.opt_flags = 0;
     memset(resp.body, 0, BUFFER_SIZE);
     bytes = 0;
 
@@ -81,12 +83,12 @@ void handle_client(int socket) {
     // Get path
     strcpy(buf, req);
     path = http_parse_path(http_parse_uri(buf));
+    printf("Request: %s\n", path);
 
     // Parse cookies 
     if (strstr(req, HDR_COOKIE)) {
       strcpy(buf, req);
-      cookie_val = http_parse_header_field(buf, bytes, HDR_COOKIE);
-      cookie = get_cookies_from_header(cookie_val);
+      cookie = get_cookies_from_header(get_cookie_str_from_req(buf));
     } else {
       cookie = NULL;
     }
@@ -101,44 +103,60 @@ void handle_client(int socket) {
     }
 
     // Handle command
-    switch (method) {
-      case METHOD_GET:
-        param = get_params_from_query(get_query_str_from_path(path));
-        if (cmd == SERV_KNOCK) {
-          knock_handler(&resp, cookie);
-        } else if (cmd == SERV_LOGIN) {
-          login_handler(&resp, param);
-        } else if (cmd == SERV_LOGOUT) {
-          logout_handler(&resp, cookie);
-        } else if (cmd == SERV_GETFILE) {
-          since_time = 0;
-          strcpy(buf, req);
-          if (strstr(buf, HDR_IF_MOD_SINCE)) {
-            if (!RFC_822_to_time(strstr(buf, HDR_IF_MOD_SINCE) + strlen(HDR_IF_MOD_SINCE), &since_time)) {
-              since_time = 0;
+    switch(cmd) {
+      case SERV_KNOCK:
+      case SERV_LOGIN:
+      case SERV_LOGOUT:
+      case SERV_GETFILE:
+        if (method == METHOD_GET) {
+          param = get_params_from_query(get_query_str_from_path(path));
+          if (cmd == SERV_KNOCK) {
+            knock_handler(&resp, cookie);
+          } else if (cmd == SERV_LOGIN) {
+            login_handler(&resp, param);
+          } else if (cmd == SERV_LOGOUT) {
+            logout_handler(&resp, cookie);
+          } else if (cmd == SERV_GETFILE) {
+            since_time = 0;
+            strcpy(buf, req);
+            if (strstr(buf, HDR_IF_MOD_SINCE)) {
+              if (!RFC_822_to_time(strstr(buf, HDR_IF_MOD_SINCE) + strlen(HDR_IF_MOD_SINCE), 
+                    &since_time)) {
+                since_time = 0;
+              }
             }
+            getfile_handler(&resp, param, since_time);
           }
-          getfile_handler(&resp, param, since_time);
         } else {
-          resp.status = NOT_FOUND;
-          resp.connection = CLOSE;
+          resp.allow = METHOD_GET;
+          resp.status = METHOD_NOT_ALLOWED;
         }
         break;
-      case METHOD_POST:
+      case SERV_PUTFILE:
+        if (method == METHOD_POST) {
+          strcpy(buf, req);
+          param = get_params_from_query((char*) http_parse_body(buf, bytes));
+          putfile_handler(&resp, cookie, param);
+        } else {
+          resp.allow = METHOD_POST;
+          resp.status = METHOD_NOT_ALLOWED;
+        }
         break;
       default:
-        resp.status = METHOD_NOT_ALLOWED;
-        resp.connection = CLOSE;        
+        resp.status = NOT_FOUND;
         break;
     }
 
-    // Check if client wants to close connection after completing request
-    if (strstr(req, "Connection:")) {
+    // Check if status not ok or 
+    // client wants to close connection after completing request
+    if (resp.status != OK) {
+      resp.connection = CLOSE;
+    } else if (strstr(req, "Connection:")) {
       connection = http_parse_header_field(buf, bytes, "Connection");
-      if (resp.connection == KEEP_ALIVE && strcmp(connection, "close") == 0) {
+      if (strcmp(connection, "close") == 0) {
         resp.connection = CLOSE;
       }
-    } 
+    }
 
     send_response(socket, &resp);  
   } while (resp.connection != CLOSE);
@@ -146,44 +164,38 @@ void handle_client(int socket) {
 
 void knock_handler(http_response* resp, node* cookie) {
   char *username; 
-  char body[BUFFER_SIZE];
   int bytes;
  
   resp->status = OK;
-  resp->connection = KEEP_ALIVE;
   resp->cache_control = PUBLIC;
   resp->content_type = TEXT;
 
   bytes = 0;
   username = list_lookup(cookie, "username"); 
   if (username) {
-    bytes = sprintf(body, "Username: %s\n", username);
+    bytes = sprintf(resp->body, "Username: %s\n", username);
   }
-  sprintf(body + bytes, KNOCK_RESP);
-  strcpy(resp->body, body);
-  resp->content_length = strlen(resp->body);
+  sprintf(resp->body + bytes, KNOCK_RESP);
+  resp->opt_flags |= OPT_CONTENT_LENGTH;
 }
 
 void login_handler(http_response* resp, node* param) {
   char *username;
   node *cookie;
 
-  username = list_lookup_nc(param, "username");
+  username = list_lookup(param, "username");
   if (username) {
     resp->status = OK;
-    resp->connection = KEEP_ALIVE;
     sprintf(resp->body, "Username: %s\n", username);
     cookie = (node*) malloc(sizeof(node));
     strcpy(cookie->name, "username");
     strcpy(cookie->value, username);
     cookie->next = NULL;
     resp->cookie = append_list(resp->cookie, cookie);
-    resp->content_length = strlen(resp->body);
     resp->opt_flags |= OPT_CONTENT_LENGTH;
 
   } else {
     resp->status = FORBIDDEN;
-    resp->connection = CLOSE;
   }
   resp->cache_control = PUBLIC;
   resp->content_type = TEXT;
@@ -196,19 +208,16 @@ void logout_handler(http_response* resp, node* cookie) {
   username = list_lookup(cookie, "username");
   if (username) {
     resp->status = OK;
-    resp->connection = KEEP_ALIVE;
     sprintf(resp->body, "User %s was logged out.\n", username);
     expire = (node*) malloc(sizeof(node));
     strcpy(expire->name, "username");
     strcpy(expire->value, "0");
     expire->next = NULL;
     resp->expire = append_list(resp->expire, expire);
-    resp->content_length = strlen(resp->body);
     resp->opt_flags |= OPT_CONTENT_LENGTH;
 
   } else {
     resp->status = FORBIDDEN;
-    resp->connection = CLOSE;
   }
   resp->cache_control = PUBLIC;
   resp->content_type = TEXT;
@@ -220,7 +229,6 @@ void getfile_handler(http_response* resp, node* param, time_t since) {
   size_t read;
   struct stat filestat;
 
-  printf("if-mod-since %u\n", (unsigned int) since);
   filename = list_lookup(param, "filename");
   if (filename) {
     fp = fopen(filename, "r");
@@ -228,31 +236,63 @@ void getfile_handler(http_response* resp, node* param, time_t since) {
       stat(filename, &filestat);
       if (filestat.st_mtime <= since) {
         resp->status = NOT_MODIFIED;
-        resp->connection = CLOSE;
       } else {
-        resp->status = OK;
-        resp->connection = KEEP_ALIVE;
         read = fread(resp->body, sizeof(char), MAX_FILESIZE, fp);
         resp->body[read] = 0;
+        resp->status = OK;
         resp->content_type = BINARY;
-        resp->content_length = strlen(resp->body);
         resp->opt_flags |= OPT_CONTENT_LENGTH;
         resp->last_modified = filestat.st_mtime;
         resp->opt_flags |= OPT_LAST_MODIFIED;
+
       }
     } else {
       resp->status = NOT_FOUND;
-      resp->connection = CLOSE;
       resp->content_type = TEXT;
     }
 
   } else {
       resp->status = FORBIDDEN;
-      resp->connection = CLOSE;
       resp->content_type = TEXT;
   }
   resp->cache_control = PUBLIC;
 }
+
+void putfile_handler(http_response *resp, node *cookie, node* param) {
+  FILE *fp;
+  char *username, *filename, *content, decoded[MAX_FILESIZE+1];
+  int bytes;
+  size_t written;
+
+  filename = list_lookup(param, "filename");
+  content = list_lookup(param, "content");
+  if (filename && content) {
+    fp = fopen(filename, "w+");
+    if (fp) {
+      decode(content, decoded);
+      written = fwrite(decoded, sizeof(char), strlen(decoded), fp);
+      if (written == strlen(decoded)) {
+        fclose(fp);
+        bytes = 0;
+        username = list_lookup(cookie, "username"); 
+        if (username) {
+          bytes = sprintf(resp->body, "Username: %s\n", username);
+        }
+        sprintf(resp->body + bytes, "%s has been saved successfully.", filename);
+        resp->status = OK;
+        resp->opt_flags |= OPT_CONTENT_LENGTH;
+      } else {
+        resp->status = FORBIDDEN;
+      }
+    } else {
+      resp->status = FORBIDDEN;
+    }
+  } else {
+    resp->status = FORBIDDEN;
+  }
+  resp->content_type = TEXT;
+}
+
 void ssend(int socket, const char* str) {
   send(socket, str, strlen(str), 0);
 }
@@ -273,9 +313,11 @@ void send_response(int socket, http_response *resp) {
   ssend(socket, HTTP_VERSION);
   ssend(socket, status_str[resp->status]);
   ssend(socket, "\n");
+
+  // Write allowed methods
   if (resp->status == METHOD_NOT_ALLOWED) {
     ssend(socket, HDR_ALLOW);
-    ssend(socket, METHODS_ALLOWED);
+    ssend(socket, http_method_str[resp->allow]);
     ssend(socket, "\n");
   }
   
@@ -322,7 +364,7 @@ void send_response(int socket, http_response *resp) {
   // Write content length
   if (resp->opt_flags & OPT_CONTENT_LENGTH) {
     ssend(socket, HDR_CONTENT_LEN);
-    sprintf(str, "%u", resp->content_length);
+    sprintf(str, "%u", (unsigned int) strlen(resp->body));
     ssend(socket, str);
     ssend(socket, "\n");
   }
@@ -356,16 +398,7 @@ char* list_lookup(node* list, char* name) {
     if (strcmp(name, list->name) == 0) {
       return list->value;
     }
-  }
-  return NULL;
-}
-
-// Similiar to list_lookup, but ignore the case of name when matching
-char* list_lookup_nc(node* list, char* name) {
-  while (list) {
-    if (strcasecmp(name, list->name) == 0) {
-      return list->value;
-    }
+    list = list->next;
   }
   return NULL;
 }
@@ -386,6 +419,16 @@ char* get_query_str_from_path(const char* path) {
     return qm + 1;
   }
   return NULL;
+}
+
+char* get_cookie_str_from_req(const char* req) {
+  char *cookie_str, *nl;
+  cookie_str = strstr(req, HDR_COOKIE) + strlen(HDR_COOKIE);
+  nl = memchr(cookie_str, '\r', strlen(cookie_str));
+  if (nl) *nl = 0;
+  nl = memchr(cookie_str, '\n', strlen(cookie_str));
+  if (nl) *nl = 0;
+  return cookie_str;
 }
 
 node* get_list_from_token_str(char *str, char* delimiter) {
