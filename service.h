@@ -49,7 +49,7 @@ typedef struct http_response {
 
 // Helper functions
 char* get_query_str_from_path(const char* path);
-char* get_cookie_str_from_req(const char* req);
+char* get_header_value_from_req(const char* req, const char* header_name);
 node* get_cookies_from_header(char* value);
 node* get_params_from_query(char* query);
 node* get_params_from_body(const char* body);

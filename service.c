@@ -49,10 +49,10 @@ void handle_client(int socket) {
   service cmd;
   http_method method;
   http_response resp;
-  int bytes, s;
+  int bytes, s, expected_len;
   char req[BUFFER_SIZE], buf[BUFFER_SIZE];
   const char *path;
-  char *connection;
+  char *connection, *req_body_len;
   time_t since_time;
 
   /* TODO Loop receiving requests and sending appropriate responses,
@@ -76,6 +76,19 @@ void handle_client(int socket) {
     while (http_header_complete(req, bytes) == -1) {
       bytes += recv(socket, req + bytes, BUFFER_SIZE, 0);
     }
+    
+    // Receive body if there is content length
+    where();
+    if (strstr(req, HDR_CONTENT_LEN)) {
+      where();
+      strcpy(buf, req);
+      req_body_len = get_header_value_from_req(buf, HDR_CONTENT_LEN);
+      printf("expected body len: %i\n", atoi(req_body_len));
+      expected_len = atoi(req_body_len) + bytes;
+      while (bytes < expected_len) {
+         bytes += recv(socket, req + bytes, BUFFER_SIZE, 0);
+      }
+    }
 
     // Get HTTP method
     method = http_parse_method(req);
@@ -88,7 +101,7 @@ void handle_client(int socket) {
     // Parse cookies 
     if (strstr(req, HDR_COOKIE)) {
       strcpy(buf, req);
-      cookie = get_cookies_from_header(get_cookie_str_from_req(buf));
+      cookie = get_cookies_from_header(get_header_value_from_req(buf, HDR_COOKIE));
     } else {
       cookie = NULL;
     }
@@ -421,14 +434,15 @@ char* get_query_str_from_path(const char* path) {
   return NULL;
 }
 
-char* get_cookie_str_from_req(const char* req) {
-  char *cookie_str, *nl;
-  cookie_str = strstr(req, HDR_COOKIE) + strlen(HDR_COOKIE);
-  nl = memchr(cookie_str, '\r', strlen(cookie_str));
+// Return string pointing to the value of a header, NULL terminate the original buffer
+char* get_header_value_from_req(const char* req, const char* header_name) {
+  char *value_str, *nl;
+  value_str = strstr(req, header_name) + strlen(header_name);
+  nl = memchr(value_str, '\r', strlen(value_str));
   if (nl) *nl = 0;
-  nl = memchr(cookie_str, '\n', strlen(cookie_str));
+  nl = memchr(value_str, '\n', strlen(value_str));
   if (nl) *nl = 0;
-  return cookie_str;
+  return value_str;
 }
 
 node* get_list_from_token_str(char *str, char* delimiter) {
