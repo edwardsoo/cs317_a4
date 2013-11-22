@@ -226,7 +226,6 @@ void getfile_handler(http_response* resp, node* param, time_t since) {
     fp = fopen(filename, "r");
     if (fp) {
       stat(filename, &filestat);
-      printf("last-mod %u\n", (unsigned int )filestat.st_mtime);
       if (filestat.st_mtime <= since) {
         resp->status = NOT_MODIFIED;
         resp->connection = CLOSE;
@@ -451,7 +450,7 @@ char* RFC_822_to_time(char *str, time_t *time) {
 
   // Weekday
   ptr = strtok(str, DATE_PART_DELIMITER);
-    if (!strcmp(ptr, "Sun")) {
+  if (!strcmp(ptr, "Sun")) {
     tm.tm_wday = 0;
   } else if (!strcmp(ptr, "Mon")) {
     tm.tm_wday = 1;
@@ -469,11 +468,11 @@ char* RFC_822_to_time(char *str, time_t *time) {
 
   // Day 
   ptr = strtok(NULL, DATE_PART_DELIMITER);
-    tm.tm_mday = atoi(ptr);
+  tm.tm_mday = atoi(ptr);
 
   // Month
   ptr = strtok(NULL, DATE_PART_DELIMITER);
-    if (!strcmp(ptr, "Jan")) {
+  if (!strcmp(ptr, "Jan")) {
     tm.tm_mon = 0;
   } else if (!strcmp(ptr, "Feb")) {
     tm.tm_mon = 1;
@@ -501,20 +500,23 @@ char* RFC_822_to_time(char *str, time_t *time) {
 
   // Year
   ptr = strtok(NULL, DATE_PART_DELIMITER);
-    tm.tm_year = atoi(ptr) - 1900;
+  tm.tm_year = atoi(ptr) - 1900;
 
   // Hour
   ptr = strtok(NULL, DATE_PART_DELIMITER);
-    tm.tm_hour = atoi(ptr);
+  tm.tm_hour = atoi(ptr);
 
   // Minute
   ptr = strtok(NULL, DATE_PART_DELIMITER);
-    tm.tm_min = atoi(ptr);
-  
+  tm.tm_min = atoi(ptr);
+
   // Second
   ptr = strtok(NULL, DATE_PART_DELIMITER);
-    tm.tm_sec = atoi(ptr);
+  tm.tm_sec = atoi(ptr);
 
+  // Use tm with timezone GMT
+  setenv("TZ", "GMT", 1);
+  tzset();
   *time = mktime(&tm);  
   return strtok(NULL, DATE_PART_DELIMITER);
 }
