@@ -220,11 +220,13 @@ void getfile_handler(http_response* resp, node* param, time_t since) {
   size_t read;
   struct stat filestat;
 
+  printf("if-mod-since %u\n", (unsigned int) since);
   filename = list_lookup(param, "filename");
   if (filename) {
     fp = fopen(filename, "r");
     if (fp) {
       stat(filename, &filestat);
+      printf("last-mod %u\n", (unsigned int )filestat.st_mtime);
       if (filestat.st_mtime <= since) {
         resp->status = NOT_MODIFIED;
         resp->connection = CLOSE;
@@ -237,7 +239,7 @@ void getfile_handler(http_response* resp, node* param, time_t since) {
         resp->content_length = strlen(resp->body);
         resp->opt_flags |= OPT_CONTENT_LENGTH;
         resp->last_modified = filestat.st_mtime;
-        resp->opt_flags |= OPT_CONTENT_LENGTH;
+        resp->opt_flags |= OPT_LAST_MODIFIED;
       }
     } else {
       resp->status = NOT_FOUND;
@@ -330,7 +332,7 @@ void send_response(int socket, http_response *resp) {
   if (resp->opt_flags & OPT_LAST_MODIFIED) {
     ssend(socket, HDR_LAST_MOD);
     gmtime_r(&resp->last_modified, &tm);
-    strftime(str, 0x100, ".a, %d %b %y %T %Z", &tm);
+    strftime(str, 0x100, RFC_822_FMT, &tm);
     ssend(socket, str);
     ssend(socket, "\n");
   }
