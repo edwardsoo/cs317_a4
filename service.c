@@ -49,7 +49,7 @@ void handle_client(int socket) {
   service cmd;
   http_method method;
   http_response resp;
-  int bytes, s, expected_len;
+  int bytes, s, expected_len, header_len;
   char req[BUFFER_SIZE], buf[BUFFER_SIZE];
   const char *path;
   char *connection, *req_body_len;
@@ -70,25 +70,26 @@ void handle_client(int socket) {
     resp.connection = KEEP_ALIVE;
     resp.opt_flags = 0;
     memset(resp.body, 0, BUFFER_SIZE);
+    if (cookie) free_list(cookie);
+    if (param) free_list(param);
     bytes = 0;
 
     // Wait for HTTP header to complete
-    while (http_header_complete(req, bytes) == -1) {
+    do {
       bytes += recv(socket, req + bytes, BUFFER_SIZE, 0);
-    }
+      header_len = http_header_complete(req, bytes);
+    } while (header_len == -1);
     
     // Receive body if there is content length
-    where();
     if (strstr(req, HDR_CONTENT_LEN)) {
-      where();
       strcpy(buf, req);
       req_body_len = get_header_value_from_req(buf, HDR_CONTENT_LEN);
-      printf("expected body len: %i\n", atoi(req_body_len));
-      expected_len = atoi(req_body_len) + bytes;
+      expected_len = atoi(req_body_len) + header_len;
       while (bytes < expected_len) {
          bytes += recv(socket, req + bytes, BUFFER_SIZE, 0);
       }
     }
+    // printf("recv %i bytes\n", bytes);
 
     // Get HTTP method
     method = http_parse_method(req);
@@ -121,6 +122,9 @@ void handle_client(int socket) {
       case SERV_LOGIN:
       case SERV_LOGOUT:
       case SERV_GETFILE:
+      case SERV_ADDCART:
+      case SERV_DELCART:
+      case SERV_CHECKOUT:
         if (method == METHOD_GET) {
           param = get_params_from_query(get_query_str_from_path(path));
           if (cmd == SERV_KNOCK) {
@@ -139,6 +143,12 @@ void handle_client(int socket) {
               }
             }
             getfile_handler(&resp, param, since_time);
+            where();
+          } else if (cmd == SERV_ADDCART) {
+            addcart_handler(&resp, param, cookie);
+            printf("new cookie %s=%s.\n", resp.cookie->name, resp.cookie->value);
+          } else {
+            resp.status = NOT_FOUND;
           }
         } else {
           resp.allow = METHOD_GET;
@@ -171,6 +181,7 @@ void handle_client(int socket) {
       }
     }
 
+    printf("new cookie %s=%s.\n", resp.cookie->name, resp.cookie->value);
     send_response(socket, &resp);  
   } while (resp.connection != CLOSE);
 }
@@ -205,7 +216,7 @@ void login_handler(http_response* resp, node* param) {
     strcpy(cookie->value, username);
     cookie->next = NULL;
     resp->cookie = append_list(resp->cookie, cookie);
-    resp->opt_flags |= OPT_CONTENT_LENGTH;
+    resp->opt_flags |= OPT_CONTENT_LENGTH | OPT_COOKIE_EXPIRE;
 
   } else {
     resp->status = FORBIDDEN;
@@ -244,6 +255,7 @@ void getfile_handler(http_response* resp, node* param, time_t since) {
 
   filename = list_lookup(param, "filename");
   if (filename) {
+    // printf("getfile: %s\n", filename);
     fp = fopen(filename, "r");
     if (fp) {
       stat(filename, &filestat);
@@ -254,9 +266,8 @@ void getfile_handler(http_response* resp, node* param, time_t since) {
         resp->body[read] = 0;
         resp->status = OK;
         resp->content_type = BINARY;
-        resp->opt_flags |= OPT_CONTENT_LENGTH;
+        resp->opt_flags |= OPT_CONTENT_LENGTH | OPT_LAST_MODIFIED;
         resp->last_modified = filestat.st_mtime;
-        resp->opt_flags |= OPT_LAST_MODIFIED;
 
       }
     } else {
@@ -306,16 +317,133 @@ void putfile_handler(http_response *resp, node *cookie, node* param) {
   resp->content_type = TEXT;
 }
 
+int max_item_nr(node* node) {
+  int max_n, n;
+  max_n = 0;
+  while (node) {
+    if (strncmp(node->name, "item", 4) == 0) {
+      n = atoi(node->name + 4);
+      if (n > max_n) {
+        max_n = n;
+      }
+    }
+    node = node->next;
+  }
+  return max_n;
+}
+
+void addcart_handler(http_response* resp, node* param, node* cookie) {
+  char *item_name, *username;
+  int max_n, n, bytes;
+  node* node;
+  char str[STR_SIZE];
+
+  item_name = list_lookup(param, "item");
+  if (item_name) {
+    decode(item_name, str);
+    where();
+    max_n = max_item_nr(cookie);
+    node = malloc(sizeof(node));
+    sprintf(node->name, "item%i", max_n + 1);
+    printf("strlen %i, %s.\n", (int) strlen(str), str);
+    strcpy(node->value, str);
+    node->next = NULL;
+    resp->cookie = append_list(resp->cookie, node);
+
+    bytes = 0;
+    username = list_lookup(cookie, "username"); 
+    if (username) {
+      bytes = sprintf(resp->body, "Username: %s\n", username);
+    }
+    for (n = 1; n <= max_n; n++) {
+      sprintf(str, "item%i", n);
+      item_name = list_lookup(cookie, str);
+      decode(item_name, str);
+      bytes += sprintf(resp->body + bytes, "%i. %s\n", n, str);
+    }
+    sprintf(resp->body + bytes, "%i. %s", max_n + 1, node->value);
+    resp->status = OK;
+    resp->opt_flags |= OPT_CONTENT_LENGTH | OPT_COOKIE_EXPIRE;
+    where();
+    
+  } else {
+    resp->status = FORBIDDEN;
+  }
+  resp->content_type = TEXT;
+  resp->cache_control = NO_CACHE;
+}
+
+void delcart_handler(http_response* resp, node* param, node* cookie) {
+  char *itemnr, *item_name, *username;
+  int bytes, max_n, n, del_n;
+  node *node;
+  char str[STR_SIZE];
+  
+  itemnr = list_lookup(param, "itemnr");
+  if (itemnr) {
+    node = cookie;
+    sprintf(str, "item%s", itemnr);
+    while (node) {
+      if (strcmp(node->name, str) == 0) {
+        break;
+      }
+      node = node->next;
+    }
+    if (node) {
+      del_n = atoi(node->name + 4);
+      max_n = max_item_nr(cookie);
+      node = malloc(sizeof(node));
+      sprintf(node->name, "item%i", max_n);
+      strcpy(node->value, "0");
+      node->next = NULL;
+      resp->expire = append_list(resp->expire, node);
+      for (n = del_n; n < max_n; n++) {
+        sprintf(str, "item%i", n+1);
+        item_name = list_lookup(cookie, str);
+        node = malloc(sizeof(node));
+        sprintf(node->name, "item%i", n);
+        strcpy(node->value, item_name);
+        node->next = NULL;
+        resp->cookie = append_list(resp->cookie, node);
+      }
+      bytes = 0;
+      username = list_lookup(cookie, "username"); 
+      if (username) {
+        bytes = sprintf(resp->body, "Username: %s\n", username);
+      }
+      for (n = 1; n < del_n; n++) {
+        sprintf(str, "item%i", n);
+        item_name = list_lookup(cookie, str);
+        bytes += sprintf(resp->body + bytes, "%i. %s\n", n, item_name);
+      }
+      for (n = del_n; n < max_n; n++)   {
+        sprintf(str, "item%i", n);
+        item_name = list_lookup(resp->cookie, str);
+        bytes += sprintf(resp->body + bytes, "%i. %s\n", n, item_name);
+      }
+      resp->body[bytes - 1] = 0;
+      resp->status = OK;
+      resp->opt_flags |= OPT_CONTENT_LENGTH;
+      
+    } else {
+      resp->status = FORBIDDEN;
+    }
+  } else {
+    resp->status = FORBIDDEN;
+  }
+  resp->content_type = TEXT;
+}
+
 void ssend(int socket, const char* str) {
   send(socket, str, strlen(str), 0);
 }
 
 void send_response(int socket, http_response *resp) {
-  char str[0x100], cookie_str[0x100];
+  char str[STR_SIZE], cookie_str[STR_SIZE];
   time_t now, day_from_now, epoch;
   struct tm tm;
   node *cookie;
-   
+  
   // Get time
   time(&now);
   day_from_now = now + (24*60*60);
@@ -340,17 +468,30 @@ void send_response(int socket, http_response *resp) {
   ssend(socket, "\n");
 
   // Write new cookies
-  if (resp->cookie) {
-    gmtime_r(&day_from_now, &tm);
-    strftime(str, 0x100, RFC_822_FMT, &tm);
+  if (resp->cookie && resp->opt_flags & OPT_COOKIE_EXPIRE) {
+    where(); 
+    printf("new cookie %s=%s.\n", resp->cookie->name, resp->cookie->value);
+    strftime(str, 0x100, RFC_822_FMT, gmtime(&day_from_now));
+    printf("new cookie %s=%s.\n", resp->cookie->name, resp->cookie->value);
     cookie = resp->cookie;
     while (cookie) {
       ssend(socket, HDR_SET_COOKIE);
-      sprintf(cookie_str, "%s=%s;path=/;expires=%s;\n", cookie->name, cookie->value, str);
+      printf("setting cookie %s=%s.\n", cookie->name, cookie->value);
+      sprintf(cookie_str, "%s=%s;path=/;expires=%s;\n", cookie->name,
+          cookie->value, str);
+      ssend(socket, cookie_str);
+      cookie = cookie->next;
+    }
+  } else if (resp->cookie) {
+    cookie = resp->cookie;
+    while (cookie) {
+      ssend(socket, HDR_SET_COOKIE);
+      sprintf(cookie_str, "%s=%s;path=/;\n", cookie->name, cookie->value);
       ssend(socket, cookie_str);
       cookie = cookie->next;
     }
   }
+
   // Write cookies to be deleted
   if (resp->expire)   {
     gmtime_r(&epoch, &tm);
@@ -358,7 +499,8 @@ void send_response(int socket, http_response *resp) {
     cookie = resp->expire;
     while (cookie) {
       ssend(socket, HDR_SET_COOKIE);
-      sprintf(cookie_str, "%s=%s;path=/;expires=%s;\n", cookie->name, cookie->value, str);
+      sprintf(cookie_str, "%s=%s;path=/;expires=%s;\n",
+          cookie->name, cookie->value, str);
       ssend(socket, cookie_str);
       cookie = cookie->next;
     }
@@ -427,8 +569,16 @@ void free_list(node* list) {
 
 // return NULL if no '?' or nothing after '?'
 char* get_query_str_from_path(const char* path) {
-  char* qm = memchr(path, '?', strlen(path));
+  char *qm, *nl;
+
+  qm = memchr(path, '?', strlen(path));
   if (qm && (strlen(path) - (qm - path)) > 1) {
+    nl = memchr(qm, ' ', strlen(qm));
+    if (nl) *nl = 0;
+    nl = memchr(qm, '\r', strlen(qm));
+    if (nl) *nl = 0;
+    nl = memchr(qm, '\n', strlen(qm));
+    if (nl) *nl = 0;
     return qm + 1;
   }
   return NULL;
@@ -445,6 +595,15 @@ char* get_header_value_from_req(const char* req, const char* header_name) {
   return value_str;
 }
 
+char* trim_space(char* str) {
+  char *end;
+  while(isspace(*str)) str++;
+  end = str + strlen(str) - 1;
+  while(end>str && isspace(*end)) end--;
+  *(end+1) = 0;
+  return str;
+}
+
 node* get_list_from_token_str(char *str, char* delimiter) {
   char *name, *eq, *value;
   node *this, *prev;
@@ -453,7 +612,9 @@ node* get_list_from_token_str(char *str, char* delimiter) {
 
   this = prev = NULL;
   name = strtok(str, delimiter);
+
   while (name) {
+    name = trim_space(name);
     eq = memchr(name, '=', strlen(name));
     if (!eq) break;
     value = eq + 1;
@@ -474,7 +635,7 @@ node* get_params_from_query(char* query) {
 }
 
 node* get_cookies_from_header(char* value) {
-  return get_list_from_token_str(value, "; ");
+  return get_list_from_token_str(value, ";");
 }
 
 // Reverse a list and return new head
