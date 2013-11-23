@@ -59,19 +59,17 @@ void handle_client(int socket) {
    *      until one of the conditions to close the connection is
    *      met.
    */
-  resp.expire = resp.cookie = NULL;
+  cookie = param = resp.expire = resp.cookie = NULL;
 
   do {
     // New request
-    memset(req, 0, BUFFER_SIZE);
     free_list(resp.cookie);
     free_list(resp.expire);
-    resp.expire = resp.cookie = NULL;
-    resp.connection = KEEP_ALIVE;
-    resp.opt_flags = 0;
-    memset(resp.body, 0, BUFFER_SIZE);
     if (cookie) free_list(cookie);
     if (param) free_list(param);
+    cookie = param = NULL;
+    memset(&resp, 0, sizeof(http_response));
+    memset(req, 0, BUFFER_SIZE);
     bytes = 0;
 
     // Wait for HTTP header to complete
@@ -137,16 +135,16 @@ void handle_client(int socket) {
             since_time = 0;
             strcpy(buf, req);
             if (strstr(buf, HDR_IF_MOD_SINCE)) {
-              if (!RFC_822_to_time(strstr(buf, HDR_IF_MOD_SINCE) + strlen(HDR_IF_MOD_SINCE), 
-                    &since_time)) {
+              if (!RFC_822_to_time(strstr(buf, HDR_IF_MOD_SINCE) + 
+                    strlen(HDR_IF_MOD_SINCE), &since_time)) {
                 since_time = 0;
               }
             }
             getfile_handler(&resp, param, since_time);
-            where();
           } else if (cmd == SERV_ADDCART) {
             addcart_handler(&resp, param, cookie);
-            printf("new cookie %s=%s.\n", resp.cookie->name, resp.cookie->value);
+          } else if (cmd == SERV_DELCART) {
+            delcart_handler(&resp, param, cookie);
           } else {
             resp.status = NOT_FOUND;
           }
@@ -181,7 +179,6 @@ void handle_client(int socket) {
       }
     }
 
-    printf("new cookie %s=%s.\n", resp.cookie->name, resp.cookie->value);
     send_response(socket, &resp);  
   } while (resp.connection != CLOSE);
 }
@@ -341,11 +338,9 @@ void addcart_handler(http_response* resp, node* param, node* cookie) {
   item_name = list_lookup(param, "item");
   if (item_name) {
     decode(item_name, str);
-    where();
     max_n = max_item_nr(cookie);
     node = malloc(sizeof(node));
     sprintf(node->name, "item%i", max_n + 1);
-    printf("strlen %i, %s.\n", (int) strlen(str), str);
     strcpy(node->value, str);
     node->next = NULL;
     resp->cookie = append_list(resp->cookie, node);
@@ -364,7 +359,6 @@ void addcart_handler(http_response* resp, node* param, node* cookie) {
     sprintf(resp->body + bytes, "%i. %s", max_n + 1, node->value);
     resp->status = OK;
     resp->opt_flags |= OPT_CONTENT_LENGTH | OPT_COOKIE_EXPIRE;
-    where();
     
   } else {
     resp->status = FORBIDDEN;
@@ -421,7 +415,9 @@ void delcart_handler(http_response* resp, node* param, node* cookie) {
         item_name = list_lookup(resp->cookie, str);
         bytes += sprintf(resp->body + bytes, "%i. %s\n", n, item_name);
       }
-      resp->body[bytes - 1] = 0;
+      if (max_n > 1) {
+        resp->body[bytes - 1] = 0;
+      }
       resp->status = OK;
       resp->opt_flags |= OPT_CONTENT_LENGTH;
       
@@ -441,7 +437,6 @@ void ssend(int socket, const char* str) {
 void send_response(int socket, http_response *resp) {
   char str[STR_SIZE], cookie_str[STR_SIZE];
   time_t now, day_from_now, epoch;
-  struct tm tm;
   node *cookie;
   
   // Get time
@@ -469,14 +464,10 @@ void send_response(int socket, http_response *resp) {
 
   // Write new cookies
   if (resp->cookie && resp->opt_flags & OPT_COOKIE_EXPIRE) {
-    where(); 
-    printf("new cookie %s=%s.\n", resp->cookie->name, resp->cookie->value);
     strftime(str, 0x100, RFC_822_FMT, gmtime(&day_from_now));
-    printf("new cookie %s=%s.\n", resp->cookie->name, resp->cookie->value);
     cookie = resp->cookie;
     while (cookie) {
       ssend(socket, HDR_SET_COOKIE);
-      printf("setting cookie %s=%s.\n", cookie->name, cookie->value);
       sprintf(cookie_str, "%s=%s;path=/;expires=%s;\n", cookie->name,
           cookie->value, str);
       ssend(socket, cookie_str);
@@ -494,8 +485,7 @@ void send_response(int socket, http_response *resp) {
 
   // Write cookies to be deleted
   if (resp->expire)   {
-    gmtime_r(&epoch, &tm);
-    strftime(str, 0x100, RFC_822_FMT, &tm);
+    strftime(str, 0x100, RFC_822_FMT, gmtime(&epoch));
     cookie = resp->expire;
     while (cookie) {
       ssend(socket, HDR_SET_COOKIE);
@@ -527,16 +517,14 @@ void send_response(int socket, http_response *resp) {
   // Write last modified time
   if (resp->opt_flags & OPT_LAST_MODIFIED) {
     ssend(socket, HDR_LAST_MOD);
-    gmtime_r(&resp->last_modified, &tm);
-    strftime(str, 0x100, RFC_822_FMT, &tm);
+    strftime(str, 0x100, RFC_822_FMT, gmtime(&resp->last_modified));
     ssend(socket, str);
     ssend(socket, "\n");
   }
 
   // Timestamp
   ssend(socket, HDR_DATE);
-  gmtime_r(&now, &tm);
-  strftime(str, 0x100, RFC_822_FMT, &tm);
+  strftime(str, 0x100, RFC_822_FMT, gmtime(&now));
   ssend(socket, str);
   ssend(socket, "\n");
   ssend(socket, "\n");
