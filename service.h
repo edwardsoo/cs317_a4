@@ -65,6 +65,7 @@ void getfile_handler(http_response* resp, node* param, time_t since);
 void putfile_handler(http_response *resp, node *cookie, node* param);
 void addcart_handler(http_response* resp, node* param, node* cookie);
 void delcart_handler(http_response* resp, node* param, node* cookie);
+void checkout_handler(http_response *resp, node* cookie);
 
 void send_response(int socket, http_response *response);
 

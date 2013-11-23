@@ -95,7 +95,7 @@ void handle_client(int socket) {
     // Get path
     strcpy(buf, req);
     path = http_parse_path(http_parse_uri(buf));
-    printf("Request: %s\n", path);
+    // printf("Request: %s\n", path);
 
     // Parse cookies 
     if (strstr(req, HDR_COOKIE)) {
@@ -145,6 +145,8 @@ void handle_client(int socket) {
             addcart_handler(&resp, param, cookie);
           } else if (cmd == SERV_DELCART) {
             delcart_handler(&resp, param, cookie);
+          } else if (cmd == SERV_CHECKOUT) {
+            checkout_handler(&resp, cookie);
           } else {
             resp.status = NOT_FOUND;
           }
@@ -354,9 +356,9 @@ void addcart_handler(http_response* resp, node* param, node* cookie) {
       sprintf(str, "item%i", n);
       item_name = list_lookup(cookie, str);
       decode(item_name, str);
-      bytes += sprintf(resp->body + bytes, "%i. %s\n", n, str);
+      bytes += sprintf(resp->body + bytes, "%i. %s\r\n", n, str);
     }
-    sprintf(resp->body + bytes, "%i. %s", max_n + 1, node->value);
+    sprintf(resp->body + bytes, "%i. %s\r\n", max_n + 1, node->value);
     resp->status = OK;
     resp->opt_flags |= OPT_CONTENT_LENGTH | OPT_COOKIE_EXPIRE;
     
@@ -408,15 +410,12 @@ void delcart_handler(http_response* resp, node* param, node* cookie) {
       for (n = 1; n < del_n; n++) {
         sprintf(str, "item%i", n);
         item_name = list_lookup(cookie, str);
-        bytes += sprintf(resp->body + bytes, "%i. %s\n", n, item_name);
+        bytes += sprintf(resp->body + bytes, "%i. %s\r\n", n, item_name);
       }
       for (n = del_n; n < max_n; n++)   {
         sprintf(str, "item%i", n);
         item_name = list_lookup(resp->cookie, str);
-        bytes += sprintf(resp->body + bytes, "%i. %s\n", n, item_name);
-      }
-      if (max_n > 1) {
-        resp->body[bytes - 1] = 0;
+        bytes += sprintf(resp->body + bytes, "%i. %s\r\n", n, item_name);
       }
       resp->status = OK;
       resp->opt_flags |= OPT_CONTENT_LENGTH;
@@ -428,6 +427,40 @@ void delcart_handler(http_response* resp, node* param, node* cookie) {
     resp->status = FORBIDDEN;
   }
   resp->content_type = TEXT;
+  resp->cache_control = NO_CACHE;
+}
+
+void checkout_handler(http_response *resp, node* cookie) {
+  char *username, *item_name;
+  int max_n, n, bytes;
+  char str[STR_SIZE];
+  node* item;
+  FILE *fp;
+
+  username = list_lookup(cookie, "username");
+  fp = fopen("CHECKOUT.txt", "a+");
+  if (username && fp) {
+    bytes = sprintf(resp->body, "Username: %s\n", username);
+    max_n = max_item_nr(cookie);
+    for (n = 1; n <= max_n; n++) {
+      sprintf(str, "item%i", n);
+      item_name = list_lookup(cookie, str);
+      item = malloc(sizeof(node));
+      strcpy(item->name, str);
+      strcpy(item->value, "0");
+      item->next = NULL;
+      resp->expire = append_list(resp->expire, item);
+      bytes += sprintf(resp->body + bytes, "%i. %s\r\n",n , item_name);
+    }
+    fwrite(resp->body, sizeof(char), bytes, fp);
+    fclose(fp);
+    resp->status = OK;
+    resp->opt_flags |= OPT_CONTENT_LENGTH;
+  } else {
+    resp->status = FORBIDDEN;
+  }
+  resp->content_type = TEXT;
+  resp->cache_control = NO_CACHE;
 }
 
 void ssend(int socket, const char* str) {
@@ -602,12 +635,15 @@ node* get_list_from_token_str(char *str, char* delimiter) {
   name = strtok(str, delimiter);
 
   while (name) {
-    name = trim_space(name);
     eq = memchr(name, '=', strlen(name));
     if (!eq) break;
     value = eq + 1;
     *eq = 0;
+    name = trim_space(name);
+    value = trim_space(value);
     this = (node*) malloc(sizeof(node));
+    //printf("name:%s.\n", name);
+    //printf("val:%s.\n", value);
     strcpy(this->name, name);
     strcpy(this->value, value);
     this->next = prev;
